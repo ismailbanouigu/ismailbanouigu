@@ -23,6 +23,13 @@ I added a first working prototype script: `outlook_automation.py`.
 python3 outlook_automation.py "John" "Doe" "Japan"
 ```
 
+
+### Test
+
+```bash
+python3 -m unittest -v
+```
+
 ### Notes
 
 - This script helps with **name availability + password generation only**.
