@@ -16,6 +16,7 @@ import random
 import re
 import secrets
 import string
+from http.cookiejar import CookieJar
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,9 @@ from typing import List
 
 LOOKUP_URL = "https://account.live.com/GetCredentialType.srf"
 FANTASY_BASE = "https://www.fantasynamegenerators.com/{slug}-names.php"
+DEFAULT_SIGNUP_URL = (
+    "https://signup.live.com/signup?mkt=FR-FR&uiflavor=web&fl=dob%2cflname%2cwld"
+)
 
 
 class _FantasyResultParser(HTMLParser):
@@ -98,6 +102,59 @@ def check_outlook_exists(email: str, timeout: int = 20) -> bool:
     return int(data.get("IfExistsResult", 1)) != 0
 
 
+def _extract_query_param(url: str, key: str, fallback: str = "") -> str:
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    return params.get(key, [fallback])[0]
+
+
+def check_outlook_exists_via_signup(email: str, signup_url: str, timeout: int = 20) -> bool:
+    """Check username existence by first opening signup.live.com then calling GetCredentialType.
+
+    This mirrors the account-creation flow more closely than a standalone lookup call.
+    """
+    uaid = _extract_query_param(signup_url, "uaid", "")
+
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+    opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+
+    try:
+        opener.open(signup_url, timeout=timeout).read()
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not open signup page: {exc}") from exc
+
+    payload = {
+        "username": email,
+        "uaid": uaid,
+        "isOtherIdpSupported": True,
+        "checkPhones": False,
+        "isRemoteNGCSupported": True,
+        "isCookieBannerShown": False,
+        "isFidoSupported": True,
+        "forceotclogin": False,
+        "isExternalFederationDisallowed": False,
+        "isRemoteConnectSupported": False,
+        "federationFlags": 0,
+        "isSignup": True,
+        "flowToken": "",
+    }
+    request = urllib.request.Request(
+        LOOKUP_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Referer": signup_url},
+        method="POST",
+    )
+
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not contact Microsoft signup lookup endpoint: {exc}") from exc
+
+    data = json.loads(body)
+    return int(data.get("IfExistsResult", 1)) != 0
+
+
 def fetch_fantasy_names(country: str, limit: int = 20, timeout: int = 20) -> List[str]:
     slug = slugify_country(country)
     if not slug:
@@ -151,8 +208,17 @@ def generate_password(min_len: int = 8, max_len: int = 12) -> str:
     return "".join(password_chars)
 
 
-def pick_unique_alias(first: str, last: str, country: str, skip_check: bool = False) -> tuple[str, List[str]]:
+def pick_unique_alias(
+    first: str,
+    last: str,
+    country: str,
+    skip_check: bool = False,
+    checker=None,
+    signup_url: str = DEFAULT_SIGNUP_URL,
+) -> tuple[str, List[str]]:
     attempts = []
+    if checker is None:
+        checker = check_outlook_exists
 
     primary = normalize_for_alias(first + last)
     if not primary:
@@ -167,7 +233,10 @@ def pick_unique_alias(first: str, last: str, country: str, skip_check: bool = Fa
             attempts.append(f"{email} => SKIPPED (offline mode)")
             return candidate, attempts
 
-        exists = check_outlook_exists(email)
+        if checker is check_outlook_exists_via_signup:
+            exists = checker(email, signup_url)
+        else:
+            exists = checker(email)
         attempts.append(f"{email} => {'TAKEN' if exists else 'AVAILABLE'}")
         if not exists:
             return candidate, attempts
@@ -185,13 +254,27 @@ def main() -> None:
     parser.add_argument("country", help="Used for fantasy fallback names, e.g. 'japan'")
     parser.add_argument("--skip-availability-check", action="store_true",
                         help="Offline fallback: skip Microsoft uniqueness check")
+    parser.add_argument(
+        "--signup-url",
+        default=DEFAULT_SIGNUP_URL,
+        help="Signup URL to initialize Microsoft account-creation session",
+    )
+    parser.add_argument(
+        "--use-signup-flow",
+        action="store_true",
+        help="Check availability using signup.live.com flow before credential lookup",
+    )
     args = parser.parse_args()
+
+    checker = check_outlook_exists_via_signup if args.use_signup_flow else check_outlook_exists
 
     alias, attempts = pick_unique_alias(
         args.first_name,
         args.last_name,
         args.country,
         skip_check=args.skip_availability_check,
+        checker=checker,
+        signup_url=args.signup_url,
     )
     password = generate_password(8, 12)
 

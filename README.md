@@ -21,6 +21,9 @@ I added a first working prototype script: `outlook_automation.py`.
 
 ```bash
 python3 outlook_automation.py "John" "Doe" "Japan"
+
+# Use Microsoft signup flow checker (supports custom signup URL)
+python3 outlook_automation.py "John" "Doe" "Japan" --use-signup-flow --signup-url "https://signup.live.com/signup?..."
 ```
 
 
@@ -34,6 +37,7 @@ python3 -m unittest -v
 
 - This script helps with **name availability + password generation only**.
 - If your network blocks Microsoft endpoints, you can run with `--skip-availability-check` to test the flow offline.
+- `--use-signup-flow` first opens the signup URL, then checks alias availability with the same session context (closer to web signup behavior).
 - It does **not** create the Outlook account (that step can hit anti-bot checks / CAPTCHA).
 - Country pages on Fantasy Name Generators vary; if no names are returned, try another country keyword.
 
